@@ -1,7 +1,7 @@
 ## Windows Service Host for Nginx
 
 ### **Compile**
-> Compile **host** `nginx` from source `nginx.cs`.
+> Compile **host** `nginx` from source [`nginx.cs`](src/nginx.cs).
 >```cmd
 > %SystemRoot%\Microsoft.NET\Framework\v2.0.50727\csc.exe /target:winexe /out:nginx  nginx.cs
 >```
