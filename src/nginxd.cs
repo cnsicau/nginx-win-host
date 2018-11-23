@@ -44,7 +44,7 @@ class NginxD : ServiceBase
 
             running = true;
             Run("-s quit").WaitForExit(); // clean up previous nginx process
-            ThreadPool.UnsafeQueueUserWorkItem(RunNginx, null);
+            new Thread(RunNginx).Start();
         }
 
         void CheckConfig()
@@ -57,7 +57,7 @@ class NginxD : ServiceBase
             }
         }
 
-        void RunNginx(object state)
+        void RunNginx()
         {
             while (running)
             {
@@ -173,12 +173,10 @@ class NginxD : ServiceBase
         /// <returns></returns>
         static public NamedPipeServerStream CreateServer()
         {
-            var name = GetPipeName();
-            var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Message, PipeOptions.Asynchronous);
             var security = new PipeSecurity();
             security.AddAccessRule(new PipeAccessRule("Users", PipeAccessRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
-            server.SetAccessControl(security);
-            return server;
+            var name = GetPipeName();
+            return new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Message, PipeOptions.Asynchronous, 0, 0, security);
         }
 
         /// <summary>
