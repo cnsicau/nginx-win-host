@@ -146,11 +146,11 @@ class NginxD : ServiceBase
                 writer.WriteLine(string.IsNullOrEmpty(args) ? "-?" : args);
                 writer.Flush();
                 client.WaitForPipeDrain();
-                Console.WriteLine(new StreamReader(client).ReadToEnd());
+                Console.Write(new StreamReader(client).ReadToEnd());
             }
             catch (System.TimeoutException)
             {
-                Console.Error.WriteLine("failed to connect nginxd service .");
+                Console.Error.Write("failed to connect nginxd service .");
             }
         }
     }
