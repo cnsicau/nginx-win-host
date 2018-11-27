@@ -1,15 +1,19 @@
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Configuration.Install;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Reflection;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading;
 
 class NginxD : ServiceBase
 {
-
     class NginxDaemon
     {
         /// <summary>
@@ -88,7 +92,7 @@ class NginxD : ServiceBase
 
     class NginxControlServer
     {
-        NamedPipeServerStream serverStream = ControlPipeFactory.CreateServer();
+        NamedPipeServerStream serverStream = ControlPipeFactory.CreateServer("instance");
 
         public void Open()
         {
@@ -138,10 +142,10 @@ class NginxD : ServiceBase
 
         public void Execute()
         {
-            var client = ControlPipeFactory.CreateClient();
+            var client = ControlPipeFactory.CreateClient("instance");
             try
             {
-                client.Connect(1000);
+                client.Connect(1);
                 var writer = new StreamWriter(client);
                 writer.WriteLine(string.IsNullOrEmpty(args) ? "-?" : args);
                 writer.Flush();
@@ -155,15 +159,15 @@ class NginxD : ServiceBase
         }
     }
 
-    class ControlPipeFactory
+    static class ControlPipeFactory
     {
-        static string GetPipeName()
+        static string GetPipeName(string type)
         {
             var path = typeof(ControlPipeFactory).Assembly.CodeBase;
             using (var md5 = MD5.Create())
             {
                 var hash = md5.ComputeHash(Encoding.UTF8.GetBytes(path));
-                return "nginxd/" + new Guid(hash).ToString("n");
+                return "nginx/" + type + "/" + new Guid(hash).ToString("n");
             }
         }
 
@@ -171,11 +175,11 @@ class NginxD : ServiceBase
         /// create server pipe stream
         /// </summary>
         /// <returns></returns>
-        static public NamedPipeServerStream CreateServer()
+        static public NamedPipeServerStream CreateServer(string type)
         {
             var security = new PipeSecurity();
             security.AddAccessRule(new PipeAccessRule("Users", PipeAccessRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
-            var name = GetPipeName();
+            var name = GetPipeName(type);
             return new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Message, PipeOptions.Asynchronous, 0, 0, security);
         }
 
@@ -183,13 +187,137 @@ class NginxD : ServiceBase
         /// create client pipe stream
         /// </summary>
         /// <returns></returns>
-        static public NamedPipeClientStream CreateClient()
+        static public NamedPipeClientStream CreateClient(string type)
         {
-            var name = GetPipeName();
+            var name = GetPipeName(type);
             return new NamedPipeClientStream(".", name);
         }
     }
 
+    static class ServiceController
+    {
+        static ServiceController()
+        {
+            var user = WindowsIdentity.GetCurrent();
+            const string PipeType = "controller";
+
+            if (!new WindowsPrincipal(user).IsInRole(WindowsBuiltInRole.Administrator))
+            {
+                ProcessStartInfo si = new ProcessStartInfo();
+                si.WindowStyle = ProcessWindowStyle.Hidden;
+                si.UseShellExecute = true;
+                si.FileName = typeof(ServiceController).Assembly.Location;
+                si.WorkingDirectory = Environment.CurrentDirectory;
+                si.Arguments = Environment.CommandLine.Substring(Environment.CommandLine.IndexOf(' ') + 1);
+                si.Verb = "runas";
+
+                var pipe = ControlPipeFactory.CreateServer(PipeType);
+                pipe.BeginWaitForConnection(OnPipeConnected, pipe);
+
+                try
+                {
+                    invoke = Process.Start(si);
+                }
+                catch
+                {
+                    Console.WriteLine("Install/Remove service requires administrator priviledge.");
+                    Environment.Exit(1);
+                }
+            }
+            else
+            {
+                var pipe = ControlPipeFactory.CreateClient(PipeType);
+                try
+                {
+                    pipe.Connect(1);
+                    writer = new StreamWriter(pipe) { AutoFlush = true };
+                }
+                catch (System.TimeoutException)
+                {
+                    writer = Console.Out;
+                }
+                Debugger.Launch();
+            }
+        }
+
+        static readonly TextWriter writer;
+
+        static readonly Process invoke;
+
+        static void OnPipeConnected(IAsyncResult ar)
+        {
+            var pipe = (NamedPipeServerStream)ar.AsyncState;
+            pipe.EndWaitForConnection(ar);
+
+            using (var reader = new StreamReader(pipe))
+            {
+                while (!reader.EndOfStream)
+                {
+                    Console.WriteLine(reader.ReadLine());
+                }
+            }
+        }
+
+        static void InvokeRunAs(Action<IDictionary, ServiceProcessInstaller, ServiceInstaller> action)
+        {
+            if (invoke != null)
+            {
+                invoke.WaitForExit();
+                Environment.Exit(invoke.ExitCode);
+            }
+            else
+            {
+                var state = new Hashtable();
+
+                using (var installer = new ServiceProcessInstaller())
+                using (var serviceInstaller = new ServiceInstaller())
+                {
+                    try
+                    {
+                        installer.Account = ServiceAccount.NetworkService;
+                        installer.Installers.Add(serviceInstaller);
+                        action(state, installer, serviceInstaller);
+                        if (state.Count > 0) installer.Commit(state);
+                        writer.Write("Success.");
+                    }
+                    catch (Exception e)
+                    {
+                        if (state.Count > 0) installer.Rollback(state);
+                        writer.WriteLine("Error: " + e.Message);
+                    }
+                }
+            }
+        }
+
+        static public void Install(string serviceName, string displayName, string description)
+        {
+            InvokeRunAs((state, installer, serviceInstaller) =>
+            {
+                writer.WriteLine("Install service " + serviceName);
+
+                installer.Context = serviceInstaller.Context = new InstallContext(null, null);
+                serviceInstaller.Context.Parameters.Add("assemblyPath", typeof(ServiceController).Assembly.Location + " " + serviceName);
+
+                serviceInstaller.ServiceName = serviceName;
+                serviceInstaller.Description = displayName ?? "nginx daemon";
+                serviceInstaller.DisplayName = description ?? "nginx service";
+                serviceInstaller.StartType = ServiceStartMode.Automatic;
+
+                installer.Install(state);
+            });
+        }
+
+        static public void Remove(string serviceName)
+        {
+            InvokeRunAs((state, installer, serviceInstaller) =>
+            {
+                installer.Context = serviceInstaller.Context = new InstallContext(null, null);
+                writer.WriteLine("Remove service " + serviceName);
+                serviceInstaller.ServiceName = serviceName;
+                installer.Uninstall(null);
+            });
+        }
+    }
 
     NginxDaemon daemon;
     NginxControlServer control = new NginxControlServer();
@@ -216,6 +344,21 @@ class NginxD : ServiceBase
     {
         if (Environment.UserInteractive)
         {
+            if (args.Length > 0)
+            {
+                if (args[0] == "--install")
+                {
+                    ServiceController.Install(args.Length > 1 ? args[1] : "nginx"
+                        , args.Length > 2 ? args[2] : null
+                        , args.Length > 3 ? args[3] : null);
+                    return;
+                }
+                else if (args[0] == "--remove")
+                {
+                    ServiceController.Remove(args.Length > 1 ? args[1] : "nginx");
+                    return;
+                }
+            }
             new NginxControlCommand(args).Execute();
         }
         else

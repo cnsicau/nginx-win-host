@@ -1,38 +1,41 @@
 ## Windows Service Host for Nginx
 
-### **Compile**
-> Compile **host** `nginx` from source [`nginx.cs`](src/nginx.cs).
->```cmd
-> %SystemRoot%\Microsoft.NET\Framework\v2.0.50727\csc.exe /target:winexe /out:nginx  nginx.cs
->```
+### **Download**
+>#### 1. .NET 3.5  [`nginx.com`](dist/net35/nginx.com)
+>#### 2. .NET 4.0+ [`nginx.com`](dist/net40/nginx.com)
 
 ### **Usage**
 
->#### 1. copy host `nginx` to nginx root directory(contains `nginx.exe`).
+>#### 1. copy `nginx.com` to nginx root directory(contains `nginx.exe`).
 >
 >#### 2. create `nginx service`.
 >open windows **`cmd`** prompt and run :
 >```cmd
-># %NGINX_ROOT% is nginx root directory
->sc create nginx binpath= "%NGINX_ROOT%\nginx' start= auto
+>nginx --install
+>```
+>```cmd
+Install service nginx.
+Success.
 >```
 >
->#### 3. start nginx host
+>#### 3. start `nginx service`.
 >```cmd
->sc start nginx
+>net start nginx
 >```
 >
->#### 4. stop nginx host
+>#### 4. stop `nginx service`
 >```cmd
->sc stop nginx
+>net stop nginx
 >```
 >
->#### 5. send `nginx -s reopen` command
+>#### 5. manage `nginx` command
 >```cmd
->sc pause nginx
->```
->
->#### 6. send `nginx -s reload` command
->```cmd
->sc continue nginx
+>nginx -V
+>nginx -v
+>nginx -t
+>nginx -T
+>nginx -s reopen
+>nginx -s reload
+>nginx -s quit
+>nginx -s stop
 >```
