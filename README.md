@@ -13,51 +13,38 @@
 >```cmd
 >nginxd--install
 >```
-
->```cmd
 >Install service nginx.
 >Success.
->```
->
+
 >#### 3. remove `nginx service`.
 >```cmd
 >nginxd --remove
 >```
-
->```cmd
 >Remove service nginx.
 >Success.
->```
->
 
 >#### 4. start `nginx service`.
 >```cmd
 >nginxd --start
 >```
-
->```cmd
 >Start service nginx.
 >Success.
->```
->
+
 >#### 5. stop `nginx service`
 >```cmd
 >nginxd --stop
 >```
-
->```cmd
 >Stop service nginx.
 >Success.
->```
->
+
 >#### 6. manage `nginx` command
 >```cmd
->nginx -V
->nginx -v
->nginx -t
->nginx -T
->nginx -s reopen
->nginx -s reload
->nginx -s quit
->nginx -s stop
+>nginxd -V
+>nginxd -v
+>nginxd -t
+>nginxd -T
+>nginxd -s reopen
+>nginxd -s reload
+>nginxd -s quit
+>nginxd -s stop
 >```
