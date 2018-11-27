@@ -259,7 +259,7 @@ class NginxD : ServiceBase
                 {
                     try
                     {
-                        installer.Account = ServiceAccount.NetworkService;
+                        installer.Account = ServiceAccount.LocalService;
                         installer.Installers.Add(serviceInstaller);
                         action(writer, state, installer, serviceInstaller, args);
                         if (state.Count > 0) installer.Commit(state);
@@ -280,6 +280,11 @@ class NginxD : ServiceBase
         {
             Invoke(Install, new string[] { serviceName, displayName, description });
         }
+        
+        static bool IsNetFramework2() 
+        {
+            return typeof(ServiceInstaller).Assembly.ImageRuntimeVersion.CompareTo("v4") == -1;
+        }
 
         static void Install(TextWriter writer, IDictionary state, ServiceProcessInstaller installer, ServiceInstaller serviceInstaller, object args)
         {
@@ -287,7 +292,9 @@ class NginxD : ServiceBase
             writer.WriteLine("Install service " + arr[0]);
 
             installer.Context = serviceInstaller.Context = new InstallContext(null, null);
-            serviceInstaller.Context.Parameters.Add("assemblyPath", "\"" + typeof(ServiceManager).Assembly.Location + "\" " + arr[0]);
+            serviceInstaller.Context.Parameters.Add("assemblyPath",  IsNetFramework2()
+                ? (typeof(ServiceManager).Assembly.Location + "\" \"" + arr[0])
+                : ("\"" + typeof(ServiceManager).Assembly.Location + "\" " + arr[0]));
 
             serviceInstaller.ServiceName = arr[0];
             serviceInstaller.Description = arr[1] ?? "nginx daemon";
@@ -317,7 +324,10 @@ class NginxD : ServiceBase
         static void Start(TextWriter writer, IDictionary state, ServiceProcessInstaller installer, ServiceInstaller serviceInstaller, object args)
         {
             writer.WriteLine("Start service " + (string)args);
-            new ServiceController((string)args).Start();
+            var service = new ServiceController((string)args);
+            if(service.Status != ServiceControllerStatus.Running) service.Start();
+            
+            WaitForStatus(service, ServiceControllerStatus.Running);
         }
 
         static public void Stop(string serviceName)
@@ -327,7 +337,17 @@ class NginxD : ServiceBase
         static void Stop(TextWriter writer, IDictionary state, ServiceProcessInstaller installer, ServiceInstaller serviceInstaller, object args)
         {
             writer.WriteLine("Stop service " + (string)args);
-            new ServiceController((string)args).Stop();
+            var service = new ServiceController((string)args);
+            if(service.Status != ServiceControllerStatus.Stopped) service.Stop();
+            
+            WaitForStatus(service, ServiceControllerStatus.Stopped);
+        }
+        
+        static void WaitForStatus(ServiceController service, ServiceControllerStatus status)
+        {
+            service.WaitForStatus(status, TimeSpan.FromSeconds(30));
+            
+            if(service.Status != status) throw new InvalidOperationException("Invalid service status " + service.Status);
         }
     }
 
