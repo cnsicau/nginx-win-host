@@ -1,8 +1,8 @@
 ## Windows Service Host for Nginx
 
 ### **Download**
->#### 1 .NET 3.5  [`nginxd`](dist/net35/nginxd) for Windows7, Windows 2008, Windows 2008 r2
->#### 2 .NET 4.0+ [`nginxd`](dist/net40/nginxd) for Windows8, Windows10, Windows 2012+
+>#### 1 .NET 3.5  [`nginxd`](dist/net35/nginxd.exe) for Windows7, Windows 2008, Windows 2008 r2
+>#### 2 .NET 4.0+ [`nginxd`](dist/net40/nginxd.exe) for Windows8, Windows10, Windows 2012+
 
 ### **Usage**
 
