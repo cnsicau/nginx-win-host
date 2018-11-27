@@ -259,7 +259,7 @@ class NginxD : ServiceBase
                 {
                     try
                     {
-                        installer.Account = ServiceAccount.LocalService;
+                        installer.Account = ServiceAccount.LocalSystem;
                         installer.Installers.Add(serviceInstaller);
                         action(writer, state, installer, serviceInstaller, args);
                         if (state.Count > 0) installer.Commit(state);
