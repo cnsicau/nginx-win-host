@@ -1,17 +1,17 @@
 ## Windows Service Host for Nginx
 
 ### **Download**
->#### 1 .NET 3.5  [`nginx.com`](dist/net35/nginx.com) for Windows7, Windows 2008, Windows 2008 r2
->#### 2 .NET 4.0+ [`nginx.com`](dist/net40/nginx.com) for Windows8, Windows10, Windows 2012+
+>#### 1 .NET 3.5  [`nginxd`](dist/net35/nginxd) for Windows7, Windows 2008, Windows 2008 r2
+>#### 2 .NET 4.0+ [`nginxd`](dist/net40/nginxd) for Windows8, Windows10, Windows 2012+
 
 ### **Usage**
 
->#### 1. copy `nginx.com` to nginx root directory(contains `nginx.exe`).
+>#### 1. copy `nginxd` to nginx root directory(contains `nginx.exe`).
 >
 >#### 2. create `nginx service`.
 >open windows **`cmd`** prompt and run :
 >```cmd
->nginx --install
+>nginxd--install
 >```
 
 >```cmd
@@ -21,7 +21,7 @@
 >
 >#### 3. remove `nginx service`.
 >```cmd
->nginx --remove
+>nginxd --remove
 >```
 
 >```cmd
@@ -32,12 +32,22 @@
 
 >#### 4. start `nginx service`.
 >```cmd
->net start nginx
+>nginxd --start
+>```
+
+>```cmd
+>Start service nginx.
+>Success.
 >```
 >
 >#### 5. stop `nginx service`
 >```cmd
->net stop nginx
+>nginxd --stop
+>```
+
+>```cmd
+>Stop service nginx.
+>Success.
 >```
 >
 >#### 6. manage `nginx` command
