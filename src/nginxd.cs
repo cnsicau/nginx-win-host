@@ -708,7 +708,6 @@ class NginxD : ServiceBase
             foreach (var file in files)
             {
                 if (!regex.IsMatch(Path.GetFileName(file))) continue;
-                if (new FileInfo(file).Length == 0) continue;
 
                 RotateFile(file);
             }
@@ -766,14 +765,17 @@ class NginxD : ServiceBase
 
         protected override void RotateFile(string file)
         {
-            File.Move(file, file + "-" + DateTime.Now.ToString("yyyyMMdd"));
+            if (new FileInfo(file).Length == 0)
+              File.Move(file, file + "-" + DateTime.Now.ToString("yyyyMMdd"));
+              
             if (Options.Compress)
             {
                 var date = DateTime.Today.AddDays(-Options.DelayCompress);
-                while (true)
+                var start = DateTime.Today.AddDays(-Options.Rotate);
+                while (date >= start)
                 {
                     var compressFile = file + "-" + date.ToString("yyyyMMdd");
-                    if (!File.Exists(compressFile)) break;
+                    if (!File.Exists(compressFile)) continue;
 
                     CompressFile(compressFile);
                     File.Delete(compressFile);
