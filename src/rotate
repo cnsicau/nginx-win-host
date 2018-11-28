@@ -1,0 +1,37 @@
+# nginxd 日志滚动配置
+D:\Data\Desktop\nginx-1.11.7\logs\ {
+    
+    # 每天 1点
+    daily 18:38:49
+    
+    # 保留 90 天，超过90天的文件将被删除
+    rotate 90 
+    
+    # 压缩文件，将文件压缩为 .gz 格式
+    compress 
+    
+    # 延迟压缩，当指定 compress 后，可延迟1天压缩文件
+    delaycompress 
+    
+    # 包含子目录中的 *.log ，若仅处理顶层，则注释此指令
+    includesubdirs 
+}
+
+# nginxd 日志滚动配置
+D:\Data\Desktop\nginx-1.11.7\logs\svn*.log {
+    
+    # 每天 1点
+    daily 18:38:55
+    
+    # 保留 90 天，超过90天的文件将被删除
+    rotate 10 
+    
+    # 压缩文件，将文件压缩为 .gz 格式
+    compress off
+    
+    # 延迟压缩，当指定 compress 后，可延迟1天压缩文件
+    delaycompress 0
+    
+    # 包含子目录中的 *.log ，若仅处理顶层，则注释此指令
+    # includesubdirs
+}

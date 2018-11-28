@@ -1,14 +1,17 @@
 ﻿using System;
-using System.Collections;
-using System.Configuration.Install;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Collections;
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Security.Principal;
-using System.ServiceProcess;
 using System.Text;
-using System.Threading;
+using System.ServiceProcess;
+using System.Configuration.Install;
 
 class NginxD : ServiceBase
 {
@@ -280,8 +283,8 @@ class NginxD : ServiceBase
         {
             Invoke(Install, new string[] { serviceName, displayName, description });
         }
-        
-        static bool IsNetFramework2() 
+
+        static bool IsNetFramework2()
         {
             return typeof(ServiceInstaller).Assembly.ImageRuntimeVersion.CompareTo("v4") == -1;
         }
@@ -292,7 +295,7 @@ class NginxD : ServiceBase
             writer.WriteLine("Install service " + arr[0]);
 
             installer.Context = serviceInstaller.Context = new InstallContext(null, null);
-            serviceInstaller.Context.Parameters.Add("assemblyPath",  IsNetFramework2()
+            serviceInstaller.Context.Parameters.Add("assemblyPath", IsNetFramework2()
                 ? (typeof(ServiceManager).Assembly.Location + "\" \"" + arr[0])
                 : ("\"" + typeof(ServiceManager).Assembly.Location + "\" " + arr[0]));
 
@@ -325,8 +328,8 @@ class NginxD : ServiceBase
         {
             writer.WriteLine("Start service " + (string)args);
             var service = new ServiceController((string)args);
-            if(service.Status != ServiceControllerStatus.Running) service.Start();
-            
+            if (service.Status != ServiceControllerStatus.Running) service.Start();
+
             WaitForStatus(service, ServiceControllerStatus.Running);
         }
 
@@ -338,18 +341,455 @@ class NginxD : ServiceBase
         {
             writer.WriteLine("Stop service " + (string)args);
             var service = new ServiceController((string)args);
-            if(service.Status != ServiceControllerStatus.Stopped) service.Stop();
-            
+            if (service.Status != ServiceControllerStatus.Stopped) service.Stop();
+
             WaitForStatus(service, ServiceControllerStatus.Stopped);
         }
-        
+
         static void WaitForStatus(ServiceController service, ServiceControllerStatus status)
         {
             service.WaitForStatus(status, TimeSpan.FromSeconds(30));
-            
-            if(service.Status != status) throw new InvalidOperationException("Invalid service status " + service.Status);
+
+            if (service.Status != status) throw new InvalidOperationException("Invalid service status " + service.Status);
         }
     }
+
+
+    public enum RotateType
+    {
+        Daily = 0
+    }
+
+    public class LogRotateOptions
+    {
+        /// <summary>
+        /// 根路径 如 logs\*.logs 中 logs\ 的部分
+        /// </summary>
+        public string Root { get; set; }
+
+        /// <summary>
+        /// 过滤文件 如  logs\*.logs 中 *.logs部分
+        /// </summary>
+        public string Filter { get; set; }
+
+        /// <summary>
+        /// 滚动类型
+        /// </summary>
+        public RotateType RotateType { get; set; }
+
+        /// <summary>
+        /// 如 daily 1:00:00 中 1:00:00 部分
+        /// </summary>
+        public string RotateArguments { get; set; }
+
+        /// <summary>
+        /// 日志文件滚动保留时间（天）
+        /// </summary>
+        public int Rotate { get; set; }
+
+        /// <summary>
+        /// 是否启用 gzip 压缩
+        /// </summary>
+        public bool Compress { get; set; }
+
+        /// <summary>
+        /// 延期一天压缩
+        /// </summary>
+        public int DelayCommpress { get; set; }
+
+        /// <summary>
+        /// 是否包含子目录
+        /// </summary>
+        public bool IncludeSubDirs { get; set; }
+    }
+
+    public class LogRotateOptionsBuilder
+    {
+        private readonly Dictionary<string, string> parameters = new Dictionary<string, string>(StringComparer.CurrentCultureIgnoreCase);
+        private readonly string root;
+
+        public LogRotateOptionsBuilder(string root) { this.root = root; }
+
+        public LogRotateOptionsBuilder AddBuildParameter(string name, string value)
+        {
+            parameters[name] = value;
+
+            return this;
+        }
+
+        public virtual LogRotateOptions Build()
+        {
+            var options = new LogRotateOptions();
+
+            BuildRotateType(options);
+            BuildRotate(options);
+            BuildCompress(options);
+            BuildDelayCompress(options);
+
+            BuildRootFilter(options);
+            return options;
+        }
+
+        private void BuildRotateType(LogRotateOptions options)
+        {
+            foreach (var name in Enum.GetNames(typeof(RotateType)))
+            {
+                string arguments;
+                if (parameters.TryGetValue(name, out arguments))
+                {
+                    options.RotateType = (RotateType)Enum.Parse(typeof(RotateType), name);
+                    options.RotateArguments = arguments;
+                }
+            }
+        }
+
+        private void BuildRotate(LogRotateOptions options)
+        {
+            string rotate;
+            if (parameters.TryGetValue("rotate", out rotate))
+            {
+                int days;
+                if (!int.TryParse(rotate, out days))
+                {
+                    throw new InvalidOperationException("invalid rotate value " + rotate);
+                }
+                options.Rotate = days;
+            }
+        }
+
+        private void BuildCompress(LogRotateOptions options)
+        {
+            string compress;
+            options.Compress = true;
+            if (parameters.TryGetValue("compress", out compress))
+            {
+                if (compress == "off") options.Compress = false;
+                else if (!string.IsNullOrEmpty(compress) && compress != "on")
+                    throw new InvalidOperationException("invalid compress value " + compress);
+            }
+        }
+
+        private void BuildDelayCompress(LogRotateOptions options)
+        {
+            string delaycompress;
+            if (parameters.TryGetValue("delaycompress", out delaycompress))
+            {
+                int days = 1;
+                if (!string.IsNullOrEmpty(delaycompress)
+                    && !int.TryParse(delaycompress, out days))
+                {
+                    throw new InvalidOperationException("invalid delaycompress value " + delaycompress);
+                }
+                options.DelayCommpress = days;     // 默认1天
+            }
+        }
+
+        private void BuildRootFilter(LogRotateOptions options)
+        {
+            options.Root = Path.GetDirectoryName(root);
+            options.Filter = Path.GetFileName(root);
+
+            if (string.IsNullOrEmpty(options.Root))
+                options.Root = "logs";
+
+            if (string.IsNullOrEmpty(options.Filter))
+                options.Filter = "*.log";
+        }
+    }
+
+    public class FileLogRotateOptionsBuilderProvider
+    {
+        private readonly string file;
+
+        class DefaultLogRotateOptionsBuilder : LogRotateOptionsBuilder
+        {
+            public DefaultLogRotateOptionsBuilder() : base(string.Empty) { }
+
+            public override LogRotateOptions Build()
+            {
+                // 默认
+                return new LogRotateOptions
+                {
+                    Compress = true,
+                    DelayCommpress = 1,
+                    Filter = "*.log",
+                    Root = @"logs\",
+                    IncludeSubDirs = true,
+                    Rotate = 90,
+                    RotateArguments = "0:00:00",
+                    RotateType = RotateType.Daily
+                };
+            }
+        }
+
+        public FileLogRotateOptionsBuilderProvider(string file)
+        {
+            this.file = file;
+        }
+
+        public LogRotateOptionsBuilder CreateBuilder()
+        {
+            var file = this.file;
+
+            if (string.IsNullOrEmpty(file)) return new DefaultLogRotateOptionsBuilder();
+
+            if (!File.Exists(file))
+            {
+                file = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, file);
+                if (!File.Exists(file)) throw new FileNotFoundException(this.file);
+            }
+
+            using (var stream = File.OpenRead(file))
+            {
+                var reader = new StreamReader(stream);
+                string line = reader.ReadLine();
+                while (IsCommentOrEmpty(line)) line = reader.ReadLine();
+
+                LogRotateOptionsBuilder builder = ParseBuilder(reader, line);
+
+                while (!reader.EndOfStream)
+                {
+                    line = reader.ReadLine();
+                    if (!IsCommentOrEmpty(line))
+                        throw new InvalidOperationException("config out of { - } : " + line);
+                }
+
+                return builder;
+            }
+        }
+
+        private LogRotateOptionsBuilder ParseBuilder(StreamReader reader, string line)
+        {
+            var root = ReadRootLine(line);
+            var builder = new LogRotateOptionsBuilder(root);
+            bool eof = false;
+            while (!eof && !reader.EndOfStream)
+            {
+                line = reader.ReadLine();
+                eof = Regex.IsMatch(line, @"^\s*}\s*$");
+                if (!eof && !IsCommentOrEmpty(line))
+                {
+                    EmitBuildParameter(builder, line);
+                }
+            }
+
+            if (!eof) throw new InvalidOperationException("missing eof }");
+            return builder;
+        }
+
+        public LogRotateOptionsBuilder[] CreateBuilders()
+        {
+            var builders = new List<LogRotateOptionsBuilder>();
+            var file = this.file;
+
+            if (string.IsNullOrEmpty(file)) return new DefaultLogRotateOptionsBuilder[0];
+
+            if (!File.Exists(file))
+            {
+                file = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, file);
+                if (!File.Exists(file)) throw new FileNotFoundException(this.file);
+            }
+
+            using (var stream = File.OpenRead(file))
+            {
+                var reader = new StreamReader(stream);
+                while (!reader.EndOfStream)
+                {
+                    string line = reader.ReadLine();
+                    if (IsCommentOrEmpty(line)) continue;
+
+                    builders.Add(ParseBuilder(reader, line));
+                }
+
+                return builders.ToArray();
+            }
+        }
+
+        string ReadRootLine(string line)
+        {
+            var match = Regex.Match(line, @"^\s*(?<root>.*?)\s*\{\s*$");
+            if (!match.Success) throw new InvalidOperationException("invalid root " + line);
+            return match.Groups["root"].Value;
+        }
+
+        void EmitBuildParameter(LogRotateOptionsBuilder builder, string line)
+        {
+            var match = Regex.Match(line, @"^\s*(?<name>\S+)(\s+(?<val>.*?))\s*$");
+            if (!match.Success)
+                throw new InvalidOperationException("invalid config " + line);
+            var name = match.Groups["name"].Value;
+            var value = match.Groups["val"].Value.TrimEnd();
+            builder.AddBuildParameter(name, string.IsNullOrEmpty(value) ? null : value);
+        }
+
+        bool IsCommentOrEmpty(string line) { return Regex.IsMatch(line, @"^\s*(#|\s*$)"); }
+    }
+
+    public class LogRotaterDaemon
+    {
+        private readonly string optionsFile;
+        private LogRotater[] rotaters;
+        private Timer timer;
+        private int tickSecond = -1;
+
+        public LogRotaterDaemon(string optionsFile)
+        {
+            this.optionsFile = optionsFile;
+        }
+
+        public void Start()
+        {
+            Reload();
+            this.timer = new Timer(OnTick, null, 750, 750);
+        }
+
+        void OnTick(object state)
+        {
+            var now = DateTime.Now;
+            if (tickSecond == now.Second) return;
+            tickSecond = now.Second;
+
+            ThreadPool.UnsafeQueueUserWorkItem(ExecuteRotater, now);
+
+        }
+
+        void ExecuteRotater(object state)
+        {
+            var now = (DateTime)state;
+            foreach (var rotater in rotaters)
+            {
+                try { rotater.Rotate(now); }
+                catch (Exception e)
+                {
+                    Trace.TraceError("rotate error : " + e);
+                }
+            }
+
+            NginxDaemon.Run("-s reopen");   // 执行 reopen
+        }
+
+        public void Stop()
+        {
+            this.timer.Dispose();
+        }
+
+        public void Reload()
+        {
+            var builders = new FileLogRotateOptionsBuilderProvider(optionsFile).CreateBuilders();
+            var rotaters = new LogRotater[builders.Length];
+            for (int i = 0; i < builders.Length; i++)
+            {
+                var options = builders[i].Build();
+                rotaters[i] = new DailyLogRotater(options);
+            }
+            this.rotaters = rotaters;
+        }
+    }
+
+    public abstract class LogRotater
+    {
+        public LogRotateOptions Options { get; private set; }
+
+        public LogRotater(LogRotateOptions options)
+        {
+            Options = options;
+        }
+
+        protected abstract bool CanTrigger(DateTime dateTime);
+
+        public virtual void Rotate(DateTime dateTime)
+        {
+            if (!CanTrigger(dateTime)) return;
+            Console.WriteLine("{0: mm:ss.fff}rotate", dateTime);
+            RotateDirectory(Options.Root);
+        }
+
+        void RotateDirectory(string root)
+        {
+            if (Options.IncludeSubDirs)
+            {
+                foreach (var subDir in Directory.GetDirectories(root))
+                {
+                    RotateDirectory(subDir);
+                }
+            }
+            var files = Directory.GetFiles(root, Options.Filter);
+            var regex = new Regex("^" + Options.Filter.Replace(".", "\\.").Replace("*", ".*") + "$");
+
+            foreach (var file in files)
+            {
+                if (!regex.IsMatch(Path.GetFileName(file))) continue;
+                RotateFile(file);
+            }
+        }
+
+        protected void CompressFile(string file)
+        {
+            var gzFileName = file + ".gz";
+            using (var gzFileStream = File.Create(gzFileName))
+            {
+                using (var gzStream = new GZipStream(gzFileStream, CompressionMode.Compress))
+                {
+                    using (var source = File.OpenRead(file))
+                    {
+                        var buffer = new byte[8192];
+                        int size;
+                        while ((size = source.Read(buffer, 0, 8192)) > 0)
+                        {
+                            gzStream.Write(buffer, 0, size);
+                        }
+                    }
+                }
+            }
+            File.SetCreationTime(gzFileName, File.GetCreationTime(file)); // 同步时间
+        }
+
+        protected void CleanFile(string file)
+        {
+            var files = Directory.GetFiles(Path.GetDirectoryName(file), Path.GetFileName(file) + "*");
+            var expires = DateTime.Today.AddDays(-Options.Rotate);
+            foreach (var cleanFile in files)
+            {
+                if (File.GetCreationTime(cleanFile) < expires) File.Delete(cleanFile);
+            }
+        }
+
+        protected abstract void RotateFile(string file);
+    }
+
+    public class DailyLogRotater : LogRotater
+    {
+        public DailyLogRotater(LogRotateOptions options) : base(options)
+        {
+            if (options.RotateType != RotateType.Daily) throw new NotSupportedException();
+        }
+
+        protected override bool CanTrigger(DateTime dateTime)
+        {
+            return dateTime.ToString("H:mm:ss") == Options.RotateArguments;
+        }
+
+        protected override void RotateFile(string file)
+        {
+            File.Move(file, file + "-" + DateTime.Now.ToString("yyyyMMdd"));
+            if (Options.Compress)
+            {
+                var date = DateTime.Today.AddDays(-Options.DelayCommpress);
+                while (true)
+                {
+                    var compressFile = file + "-" + date.ToString("yyyyMMdd");
+                    if (!File.Exists(compressFile)) break;
+
+                    CompressFile(compressFile);
+                    File.Delete(compressFile);
+
+                    date = date.AddDays(-1);
+                }
+            }
+            CleanFile(file);
+        }
+    }
+
 
     NginxDaemon daemon;
     NginxControlServer control = new NginxControlServer();
