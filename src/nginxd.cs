@@ -1,25 +1,24 @@
-﻿using System;
+using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Configuration.Install;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
-using System.Text.RegularExpressions;
-using System.Threading;
-using System.Collections;
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Security.Principal;
-using System.Text;
 using System.ServiceProcess;
-using System.Configuration.Install;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 
 class NginxD : ServiceBase
 {
     class NginxDaemon
     {
         private readonly NamedPipeServerStream commandStream = ControlPipeFactory.CreateServer("instance");
-        private readonly LogRotaterDaemon rotater = new LogRotaterDaemon("rotate");
-
+        private readonly LogRotaterDaemon rotater = new LogRotaterDaemon("logrotate");
         private readonly ServiceBase service;
 
         public NginxDaemon(ServiceBase service)
@@ -47,13 +46,12 @@ class NginxD : ServiceBase
 
         public void Start()
         {
-            CheckConfig();  // ensure configuration is OK
-            Run("-s quit").WaitForExit(); // clean up previous nginx process
+            CheckConfig();                  // ensure configuration is OK
+            Run("-s quit").WaitForExit();   // clean up previous nginx process
             new Thread(RunNginx).Start();
             rotater.Start();
             commandStream.BeginWaitForConnection(OnReceiveCommand, null);
         }
-
 
         void OnReceiveCommand(IAsyncResult asr)
         {
@@ -64,16 +62,27 @@ class NginxD : ServiceBase
                 {
                     var args = new StreamReader(commandStream).ReadLine();
                     var writer = new StreamWriter(commandStream) { AutoFlush = true };
-                    if (args.StartsWith("--reconfig"))
+                    if (args == "reconfig")
                     {
                         try
                         {
-                            rotater.Reload();
-                            writer.Write("reconfig success.");
+                            var options = rotater.Reconfig();
+                            writer.WriteLine("reconfig " + options.Length + " log rotaters.");
+                            foreach (var opt in options)
+                            {
+                                writer.WriteLine(" " + opt.Root + "\\" + opt.Filter + " { ");
+                                writer.WriteLine("   " + opt.RotateType.ToString().ToLower() + " " + opt.RotateArguments);
+                                writer.WriteLine("   rotate " + opt.Rotate);
+                                writer.WriteLine("   compress " + (opt.Compress ? "on" : "off"));
+                                writer.WriteLine("   delaycompress " + opt.DelayCompress);
+                                if (opt.IncludeSubDirs) writer.WriteLine("   includesubdirs");
+                                writer.WriteLine(" }");
+                            }
+
                         }
                         catch (Exception e)
                         {
-                            writer.Write("ERROR: " + e.Message);
+                            writer.Write("reconfig failed : " + e.Message);
                         }
                     }
                     else
@@ -127,16 +136,9 @@ class NginxD : ServiceBase
         }
     }
 
-    class NginxDaemonCommand
+    static class NginxDaemonCommand
     {
-        private readonly string args;
-
-        public NginxDaemonCommand(string[] args)
-        {
-            this.args = string.Join(" ", args);
-        }
-
-        public void Send()
+        public static void Send(string args)
         {
             var client = ControlPipeFactory.CreateClient("instance");
             try
@@ -149,7 +151,7 @@ class NginxD : ServiceBase
             }
             catch (System.TimeoutException)
             {
-                Console.Error.Write("failed to connect nginxd service .");
+                Console.Error.Write("connect nginx daemon service timeout.");
             }
         }
     }
@@ -222,7 +224,7 @@ class NginxD : ServiceBase
                     }
                     catch
                     {
-                        Console.WriteLine("Install/Remove service requires administrator priviledge.");
+                        Console.WriteLine("Install/Uninstall service requires administrator priviledge.");
                         Environment.Exit(1);
                     }
                 }
@@ -286,22 +288,22 @@ class NginxD : ServiceBase
                 : ("\"" + typeof(ServiceManager).Assembly.Location + "\" " + arr[0]));
 
             serviceInstaller.ServiceName = arr[0];
-            serviceInstaller.Description = arr[1] ?? "nginx daemon";
-            serviceInstaller.DisplayName = arr[2] ?? "nginx service";
+            serviceInstaller.DisplayName = arr[1] ?? "Nginx Daemon";
+            serviceInstaller.Description = arr[2] ?? "Nginx daemon service & Tiny log rotate provider.";
             serviceInstaller.StartType = ServiceStartMode.Automatic;
 
             installer.Install(state);
         }
 
-        static public void Remove(string serviceName)
+        static public void Uninstall(string serviceName)
         {
-            Invoke(Remove, serviceName);
+            Invoke(Uninstall, serviceName);
         }
 
-        static void Remove(TextWriter writer, IDictionary state, ServiceProcessInstaller installer, ServiceInstaller serviceInstaller, object args)
+        static void Uninstall(TextWriter writer, IDictionary state, ServiceProcessInstaller installer, ServiceInstaller serviceInstaller, object args)
         {
             installer.Context = serviceInstaller.Context = new InstallContext(null, null);
-            writer.WriteLine("Remove service " + (string)args);
+            writer.WriteLine("Uninstall service " + (string)args);
             serviceInstaller.ServiceName = (string)args;
             installer.Uninstall(null);
         }
@@ -348,44 +350,27 @@ class NginxD : ServiceBase
 
     public class LogRotateOptions
     {
-        /// <summary>
-        /// 根路径 如 logs\*.logs 中 logs\ 的部分
-        /// </summary>
+        /// <summary>root directory, like logs\</summary>
         public string Root { get; set; }
 
-        /// <summary>
-        /// 过滤文件 如  logs\*.logs 中 *.logs部分
+        /// <summary>file filter, like *.logs
         /// </summary>
         public string Filter { get; set; }
 
-        /// <summary>
-        /// 滚动类型
-        /// </summary>
         public RotateType RotateType { get; set; }
 
-        /// <summary>
-        /// 如 daily 1:00:00 中 1:00:00 部分
-        /// </summary>
+        /// <summary>rotate type parameter, 1:00:00</summary>
         public string RotateArguments { get; set; }
 
-        /// <summary>
-        /// 日志文件滚动保留时间（天）
-        /// </summary>
+        /// <summary>rotate days</summary>
         public int Rotate { get; set; }
 
-        /// <summary>
-        /// 是否启用 gzip 压缩
-        /// </summary>
         public bool Compress { get; set; }
 
-        /// <summary>
-        /// 延期一天压缩
-        /// </summary>
-        public int DelayCommpress { get; set; }
+        /// <summary>compress delay days</summary>
+        public int DelayCompress { get; set; }
 
-        /// <summary>
-        /// 是否包含子目录
-        /// </summary>
+        /// <summary>include sub directories</summary>
         public bool IncludeSubDirs { get; set; }
     }
 
@@ -411,6 +396,7 @@ class NginxD : ServiceBase
             BuildRotate(options);
             BuildCompress(options);
             BuildDelayCompress(options);
+            BuildIncludeSubDirs(options);
 
             BuildRootFilter(options);
             return options;
@@ -441,6 +427,10 @@ class NginxD : ServiceBase
                 }
                 options.Rotate = days;
             }
+            else
+            {
+                options.Rotate = 90;
+            }
         }
 
         private void BuildCompress(LogRotateOptions options)
@@ -455,19 +445,25 @@ class NginxD : ServiceBase
             }
         }
 
+        private void BuildIncludeSubDirs(LogRotateOptions options)
+        {
+            options.IncludeSubDirs = parameters.ContainsKey("includesubdirs");
+        }
+
         private void BuildDelayCompress(LogRotateOptions options)
         {
             string delaycompress;
+            int days = 1;
             if (parameters.TryGetValue("delaycompress", out delaycompress))
             {
-                int days = 1;
                 if (!string.IsNullOrEmpty(delaycompress)
                     && !int.TryParse(delaycompress, out days))
-                {
                     throw new InvalidOperationException("invalid delaycompress value " + delaycompress);
-                }
-                options.DelayCommpress = days;     // 默认1天
+
+                if (days <= 0)
+                    throw new InvalidOperationException("delaycompress must great than 0.");
             }
+            options.DelayCompress = days;
         }
 
         private void BuildRootFilter(LogRotateOptions options)
@@ -493,11 +489,10 @@ class NginxD : ServiceBase
 
             public override LogRotateOptions Build()
             {
-                // 默认
                 return new LogRotateOptions
                 {
                     Compress = true,
-                    DelayCommpress = 1,
+                    DelayCompress = 1,
                     Filter = "*.log",
                     Root = @"logs\",
                     IncludeSubDirs = true,
@@ -522,7 +517,7 @@ class NginxD : ServiceBase
             if (!File.Exists(file))
             {
                 file = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, file);
-                if (!File.Exists(file)) throw new FileNotFoundException(this.file);
+                if (!File.Exists(file)) return null;
             }
 
             using (var stream = File.OpenRead(file))
@@ -568,12 +563,12 @@ class NginxD : ServiceBase
             var builders = new List<LogRotateOptionsBuilder>();
             var file = this.file;
 
-            if (string.IsNullOrEmpty(file)) return new DefaultLogRotateOptionsBuilder[0];
+            if (string.IsNullOrEmpty(file)) return new LogRotateOptionsBuilder[0];
 
             if (!File.Exists(file))
             {
                 file = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, file);
-                if (!File.Exists(file)) throw new FileNotFoundException(this.file);
+                if (!File.Exists(file)) return new LogRotateOptionsBuilder[0];
             }
 
             using (var stream = File.OpenRead(file))
@@ -600,7 +595,7 @@ class NginxD : ServiceBase
 
         void EmitBuildParameter(LogRotateOptionsBuilder builder, string line)
         {
-            var match = Regex.Match(line, @"^\s*(?<name>\S+)(\s+(?<val>.*?))\s*$");
+            var match = Regex.Match(line, @"^\s*(?<name>\S+)(\s+(?<val>.*?))?\s*$");
             if (!match.Success)
                 throw new InvalidOperationException("invalid config " + line);
             var name = match.Groups["name"].Value;
@@ -625,7 +620,7 @@ class NginxD : ServiceBase
 
         public void Start()
         {
-            Reload();
+            Reconfig();
             this.timer = new Timer(OnTick, null, 750, 750);
         }
 
@@ -642,16 +637,12 @@ class NginxD : ServiceBase
         void ExecuteRotater(object state)
         {
             var now = (DateTime)state;
+
             foreach (var rotater in rotaters)
             {
                 try { rotater.Rotate(now); }
-                catch (Exception e)
-                {
-                    Trace.TraceError("rotate error : " + e);
-                }
+                catch (Exception e) { Trace.TraceError("rotate error : " + e); }
             }
-
-            NginxDaemon.Run("-s reopen");   // 执行 reopen
         }
 
         public void Stop()
@@ -659,16 +650,18 @@ class NginxD : ServiceBase
             this.timer.Dispose();
         }
 
-        public void Reload()
+        public LogRotateOptions[] Reconfig()
         {
             var builders = new FileLogRotateOptionsBuilderProvider(optionsFile).CreateBuilders();
             var rotaters = new LogRotater[builders.Length];
+            var options = new LogRotateOptions[builders.Length];
             for (int i = 0; i < builders.Length; i++)
             {
-                var options = builders[i].Build();
-                rotaters[i] = new DailyLogRotater(options);
+                options[i] = builders[i].Build();
+                rotaters[i] = new DailyLogRotater(options[i]);
             }
             this.rotaters = rotaters;
+            return options;
         }
     }
 
@@ -687,7 +680,17 @@ class NginxD : ServiceBase
         {
             if (!CanTrigger(dateTime)) return;
             Console.WriteLine("{0: mm:ss.fff}rotate", dateTime);
-            RotateDirectory(Options.Root);
+
+            var root = Options.Root;
+            if (!Directory.Exists(root))
+            {
+                root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Options.Root);
+                if (!Directory.Exists(root)) return;
+            }
+
+            RotateDirectory(root);
+
+            NginxDaemon.Run("-s reopen");
         }
 
         void RotateDirectory(string root)
@@ -705,6 +708,8 @@ class NginxD : ServiceBase
             foreach (var file in files)
             {
                 if (!regex.IsMatch(Path.GetFileName(file))) continue;
+                if (new FileInfo(file).Length == 0) continue;
+
                 RotateFile(file);
             }
         }
@@ -727,16 +732,18 @@ class NginxD : ServiceBase
                     }
                 }
             }
-            File.SetCreationTime(gzFileName, File.GetCreationTime(file)); // 同步时间
+
+            File.SetCreationTimeUtc(gzFileName, File.GetCreationTimeUtc(file));
+            File.SetLastWriteTimeUtc(gzFileName, File.GetLastWriteTimeUtc(file));
         }
 
         protected void CleanFile(string file)
         {
             var files = Directory.GetFiles(Path.GetDirectoryName(file), Path.GetFileName(file) + "*");
             var expires = DateTime.Today.AddDays(-Options.Rotate);
-            foreach (var cleanFile in files)
+            foreach (var rotateFile in files)
             {
-                if (File.GetCreationTime(cleanFile) < expires) File.Delete(cleanFile);
+                if (File.GetLastWriteTimeUtc(rotateFile) < expires) File.Delete(rotateFile);
             }
         }
 
@@ -745,14 +752,16 @@ class NginxD : ServiceBase
 
     public class DailyLogRotater : LogRotater
     {
+        private string time;
         public DailyLogRotater(LogRotateOptions options) : base(options)
         {
             if (options.RotateType != RotateType.Daily) throw new NotSupportedException();
+            this.time = Options.RotateArguments ?? "0:00:00";
         }
 
         protected override bool CanTrigger(DateTime dateTime)
         {
-            return dateTime.ToString("H:mm:ss") == Options.RotateArguments;
+            return dateTime.ToString("H:mm:ss") == time;
         }
 
         protected override void RotateFile(string file)
@@ -760,7 +769,7 @@ class NginxD : ServiceBase
             File.Move(file, file + "-" + DateTime.Now.ToString("yyyyMMdd"));
             if (Options.Compress)
             {
-                var date = DateTime.Today.AddDays(-Options.DelayCommpress);
+                var date = DateTime.Today.AddDays(-Options.DelayCompress);
                 while (true)
                 {
                     var compressFile = file + "-" + date.ToString("yyyyMMdd");
@@ -805,23 +814,23 @@ class NginxD : ServiceBase
                 string serviceName = args.Length > 1 ? args[1] : "nginx";
                 switch (control)
                 {
-                    case "--install":
+                    case "install":
                         ServiceManager.Install(serviceName
                                   , args.Length > 2 ? args[2] : null
                                   , args.Length > 3 ? args[3] : null);
                         break;
-                    case "--remove":
-                        ServiceManager.Remove(serviceName);
+                    case "uninstall":
+                        ServiceManager.Uninstall(serviceName);
                         break;
-                    case "--start":
+                    case "start":
                         ServiceManager.Start(serviceName);
                         break;
-                    case "--stop":
+                    case "stop":
                         ServiceManager.Stop(serviceName);
                         break;
                 }
             }
-            new NginxDaemonCommand(args).Send();
+            NginxDaemonCommand.Send(string.Join(" ", args));
         }
         else
         {
