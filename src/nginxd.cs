@@ -17,6 +17,16 @@ class NginxD : ServiceBase
 {
     class NginxDaemon
     {
+        private readonly NamedPipeServerStream commandStream = ControlPipeFactory.CreateServer("instance");
+        private readonly LogRotaterDaemon rotater = new LogRotaterDaemon("rotate");
+
+        private readonly ServiceBase service;
+
+        public NginxDaemon(ServiceBase service)
+        {
+            this.service = service;
+        }
+
         /// <summary>
         /// run nginx 
         /// </summary>
@@ -35,121 +45,105 @@ class NginxD : ServiceBase
             return Process.Start(si);
         }
 
-        private bool running = false;
-        private readonly ServiceBase service;
-
-        public NginxDaemon(ServiceBase service)
-        {
-            this.service = service;
-        }
-
         public void Start()
         {
             CheckConfig();  // ensure configuration is OK
-
-            running = true;
             Run("-s quit").WaitForExit(); // clean up previous nginx process
             new Thread(RunNginx).Start();
+            rotater.Start();
+            commandStream.BeginWaitForConnection(OnReceiveCommand, null);
+        }
+
+
+        void OnReceiveCommand(IAsyncResult asr)
+        {
+            try
+            {
+                commandStream.EndWaitForConnection(asr);
+                try
+                {
+                    var args = new StreamReader(commandStream).ReadLine();
+                    var writer = new StreamWriter(commandStream) { AutoFlush = true };
+                    if (args.StartsWith("--reconfig"))
+                    {
+                        try
+                        {
+                            rotater.Reload();
+                            writer.Write("reconfig success.");
+                        }
+                        catch (Exception e)
+                        {
+                            writer.Write("ERROR: " + e.Message);
+                        }
+                    }
+                    else
+                    {
+                        var command = Run(args);
+                        writer.Write(command.StandardOutput.ReadToEnd());
+                        writer.Write(command.StandardError.ReadToEnd());
+                    }
+                    commandStream.WaitForPipeDrain();
+                }
+                finally
+                {
+                    commandStream.Disconnect();
+                    commandStream.BeginWaitForConnection(OnReceiveCommand, null);
+                }
+            }
+            catch (ObjectDisposedException) { } // shutdown
         }
 
         void CheckConfig()
         {
             var check = Run("-t");
             check.WaitForExit();
-            if (check.ExitCode != 0)
-            {
-                throw new InvalidOperationException(check.StandardError.ReadToEnd());
-            }
+            if (check.ExitCode != 0) throw new InvalidOperationException(check.StandardError.ReadToEnd());
         }
 
         void RunNginx()
         {
-            while (running)
+            for (int i = 0; i < 3; i++)
             {
                 try
                 {
                     var nginx = Run(string.Empty);
                     if (nginx.HasExited) throw new InvalidOperationException(nginx.StandardError.ReadToEnd());
                     nginx.WaitForExit();
-                    if (nginx.ExitCode == 0) // safe quit : maybe nginx -s quit or nginx -s stop
-                    {
-                        service.Stop();
-                        break;
-                    }
+                    if (nginx.ExitCode == 0) break; // safe quit : maybe nginx -s quit or nginx -s stop
                 }
                 catch (Exception)
                 {
-                    Thread.Sleep(500);
+                    Thread.Sleep(1000);
                 }
             }
+            service.Stop();
         }
 
         public void Stop()
         {
-            running = false;
+            commandStream.Dispose();
+            rotater.Stop();
             Run("-s stop").WaitForExit();
         }
     }
 
-    class NginxControlServer
-    {
-        NamedPipeServerStream serverStream = ControlPipeFactory.CreateServer("instance");
-
-        public void Open()
-        {
-            serverStream.BeginWaitForConnection(OnConnectionEstablished, null);
-        }
-
-        void OnConnectionEstablished(IAsyncResult asr)
-        {
-            try
-            {
-                serverStream.EndWaitForConnection(asr);
-                try
-                {
-                    var args = new StreamReader(serverStream).ReadLine();
-                    var command = NginxDaemon.Run(args);
-                    var writer = new StreamWriter(serverStream);
-                    writer.Write(command.StandardOutput.ReadToEnd());
-                    writer.Write(command.StandardError.ReadToEnd());
-                    writer.Flush();
-                    serverStream.WaitForPipeDrain();
-                }
-                finally
-                {
-                    serverStream.Disconnect();
-                    serverStream.BeginWaitForConnection(OnConnectionEstablished, null);
-                }
-            }
-            catch (ObjectDisposedException) // shutdown
-            {
-            }
-        }
-
-        public void Close()
-        {
-            serverStream.Dispose();
-        }
-    }
-
-    class NginxControlCommand
+    class NginxDaemonCommand
     {
         private readonly string args;
 
-        public NginxControlCommand(string[] args)
+        public NginxDaemonCommand(string[] args)
         {
             this.args = string.Join(" ", args);
         }
 
-        public void Execute()
+        public void Send()
         {
             var client = ControlPipeFactory.CreateClient("instance");
             try
             {
                 client.Connect(1);
-                var writer = new StreamWriter(client);
+                var writer = new StreamWriter(client) { AutoFlush = true };
                 writer.WriteLine(string.IsNullOrEmpty(args) ? "-?" : args);
-                writer.Flush();
                 client.WaitForPipeDrain();
                 Console.Write(new StreamReader(client).ReadToEnd());
             }
@@ -172,10 +166,6 @@ class NginxD : ServiceBase
             }
         }
 
-        /// <summary>
-        /// create server pipe stream
-        /// </summary>
-        /// <returns></returns>
         static public NamedPipeServerStream CreateServer(string type)
         {
             var security = new PipeSecurity();
@@ -184,10 +174,6 @@ class NginxD : ServiceBase
             return new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Message, PipeOptions.Asynchronous, 0, 0, security);
         }
 
-        /// <summary>
-        /// create client pipe stream
-        /// </summary>
-        /// <returns></returns>
         static public NamedPipeClientStream CreateClient(string type)
         {
             var name = GetPipeName(type);
@@ -791,8 +777,7 @@ class NginxD : ServiceBase
     }
 
 
-    NginxDaemon daemon;
-    NginxControlServer control = new NginxControlServer();
+    readonly NginxDaemon daemon;
 
     public NginxD(string serviceName)
     {
@@ -803,12 +788,10 @@ class NginxD : ServiceBase
     protected override void OnStart(string[] args)
     {
         daemon.Start();
-        control.Open();
     }
 
     protected override void OnStop()
     {
-        control.Close();
         daemon.Stop();
     }
 
@@ -838,7 +821,7 @@ class NginxD : ServiceBase
                         break;
                 }
             }
-            new NginxControlCommand(args).Execute();
+            new NginxDaemonCommand(args).Send();
         }
         else
         {
