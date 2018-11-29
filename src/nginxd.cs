@@ -111,7 +111,7 @@ class NginxD : ServiceBase
 
         void RunNginx()
         {
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 7; i++)
             {
                 try
                 {
@@ -272,7 +272,7 @@ class NginxD : ServiceBase
             Invoke(Install, new string[] { serviceName, displayName, description });
         }
 
-        static bool IsNetFramework2()
+        static bool IsDotnet2()
         {
             return typeof(ServiceInstaller).Assembly.ImageRuntimeVersion.CompareTo("v4") == -1;
         }
@@ -283,7 +283,7 @@ class NginxD : ServiceBase
             writer.WriteLine("Install service " + arr[0]);
 
             installer.Context = serviceInstaller.Context = new InstallContext(null, null);
-            serviceInstaller.Context.Parameters.Add("assemblyPath", IsNetFramework2()
+            serviceInstaller.Context.Parameters.Add("assemblyPath", IsDotnet2()
                 ? (typeof(ServiceManager).Assembly.Location + "\" \"" + arr[0])
                 : ("\"" + typeof(ServiceManager).Assembly.Location + "\" " + arr[0]));
 
@@ -343,12 +343,12 @@ class NginxD : ServiceBase
         }
     }
 
-    public enum RotateType
+    enum RotateType
     {
         Daily = 0
     }
 
-    public class LogRotateOptions
+    class LogRotateOptions
     {
         /// <summary>root directory, like logs\</summary>
         public string Root { get; set; }
@@ -374,7 +374,7 @@ class NginxD : ServiceBase
         public bool IncludeSubDirs { get; set; }
     }
 
-    public class LogRotateOptionsBuilder
+    class LogRotateOptionsBuilder
     {
         private readonly Dictionary<string, string> parameters = new Dictionary<string, string>(StringComparer.CurrentCultureIgnoreCase);
         private readonly string root;
@@ -460,8 +460,8 @@ class NginxD : ServiceBase
                     && !int.TryParse(delaycompress, out days))
                     throw new InvalidOperationException("invalid delaycompress value " + delaycompress);
 
-                if (days <= 0)
-                    throw new InvalidOperationException("delaycompress must great than 0.");
+                if (days < 0)
+                    throw new InvalidOperationException("delaycompress out of range 0.");
             }
             options.DelayCompress = days;
         }
@@ -479,7 +479,7 @@ class NginxD : ServiceBase
         }
     }
 
-    public class FileLogRotateOptionsBuilderProvider
+    class FileLogRotateOptionsBuilderProvider
     {
         private readonly string file;
 
@@ -494,7 +494,7 @@ class NginxD : ServiceBase
                     Compress = true,
                     DelayCompress = 1,
                     Filter = "*.log",
-                    Root = @"logs\",
+                    Root = @"logs",
                     IncludeSubDirs = true,
                     Rotate = 90,
                     RotateArguments = "0:00:00",
@@ -606,7 +606,7 @@ class NginxD : ServiceBase
         bool IsCommentOrEmpty(string line) { return Regex.IsMatch(line, @"^\s*(#|\s*$)"); }
     }
 
-    public class LogRotaterDaemon
+    class LogRotaterDaemon
     {
         private readonly string optionsFile;
         private LogRotater[] rotaters;
@@ -665,62 +665,80 @@ class NginxD : ServiceBase
         }
     }
 
-    public abstract class LogRotater
+    abstract class LogRotater
     {
-        public LogRotateOptions Options { get; private set; }
+        delegate void RotateFileAction(string file);
 
-        public LogRotater(LogRotateOptions options)
-        {
-            Options = options;
-        }
+        protected readonly LogRotateOptions options;
+
+        public LogRotater(LogRotateOptions options) { this.options = options; }
 
         protected abstract bool IsMatch(DateTime dateTime);
 
         public virtual void Rotate(DateTime dateTime)
         {
             if (!IsMatch(dateTime)) return;
-            Console.WriteLine("{0: mm:ss.fff}rotate", dateTime);
 
-            var root = Options.Root;
+            var root = options.Root;
             if (!Directory.Exists(root))
             {
-                root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, Options.Root);
+                root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, options.Root);
                 if (!Directory.Exists(root)) return;
             }
 
-            RotateDirectory(root);
+            var sourceFiles = new List<string>();
+            DetectRotateSourceFiles(root, sourceFiles);
+            if (sourceFiles.Count == 0) return;
+
+            RotateFiles(sourceFiles, ArchiveFile);
+            NginxDaemon.Run("-s reopen").WaitForExit();   // reopen
+            RotateFiles(sourceFiles, CleanFile);
+            if (options.Compress) RotateFiles(sourceFiles, CompressFile);
         }
 
-        void RotateDirectory(string root)
+        void DetectRotateSourceFiles(string root, List<string> sourceFilesContainer)
         {
-            var files = Directory.GetFiles(root, Options.Filter);
-            var regex = new Regex("^" + Options.Filter.Replace(".", "\\.").Replace("*", ".*") + "$");
+            var files = Directory.GetFiles(root, options.Filter);
+            var regex = new Regex("^" + options.Filter.Replace(".", "\\.").Replace("*", ".*") + "$");
 
             foreach (var file in files)
             {
                 if (!regex.IsMatch(Path.GetFileName(file))) continue;
-                
-                try{ RotateFile(file); }
-                catch(Exception e){ Trace.TraceError("rotate file " + file + " failed: " + e); }
+
+                sourceFilesContainer.Add(file);
             }
-            if (Options.IncludeSubDirs)
+
+            if (options.IncludeSubDirs)
             {
                 foreach (var subDir in Directory.GetDirectories(root))
                 {
-                    RotateDirectory(subDir);
+                    DetectRotateSourceFiles(subDir, sourceFilesContainer);
                 }
             }
-         
         }
 
-        protected void CompressFile(string file)
+        void RotateFiles(IEnumerable<string> sourceFiles, RotateFileAction rotate)
+        {
+            foreach (var sourceFile in sourceFiles)
+            {
+                try { rotate(sourceFile); }
+                catch (Exception e) { Trace.TraceError("rotate file " + sourceFile + " failed: " + e); }
+            }
+        }
+
+        protected static void Compress(string file)
         {
             var gzFileName = file + ".gz";
-            using (var gzFileStream = File.Create(gzFileName))
+            using (var source = File.Open(file, FileMode.Open, FileAccess.Read, FileShare.None))
             {
-                using (var gzStream = new GZipStream(gzFileStream, CompressionMode.Compress))
+                if (source.Length == 0) // empty clean file 
                 {
-                    using (var source = File.OpenRead(file))
+                    File.Delete(file);
+                    return;
+                }
+                using (var gzFileStream = File.Create(gzFileName))
+                {
+                    using (var gzStream = new GZipStream(gzFileStream, CompressionMode.Compress))
                     {
                         var buffer = new byte[8192];
                         int size;
@@ -732,30 +750,27 @@ class NginxD : ServiceBase
                 }
             }
 
+            File.SetAccessControl(gzFileName, File.GetAccessControl(file));
             File.SetCreationTimeUtc(gzFileName, File.GetCreationTimeUtc(file));
             File.SetLastWriteTimeUtc(gzFileName, File.GetLastWriteTimeUtc(file));
+
+            File.Delete(file);
         }
 
-        protected void CleanFile(string file)
-        {
-            var files = Directory.GetFiles(Path.GetDirectoryName(file), Path.GetFileName(file) + "*");
-            var expires = DateTime.Today.AddDays(-Options.Rotate);
-            foreach (var rotateFile in files)
-            {
-                if (File.GetLastWriteTimeUtc(rotateFile) < expires) File.Delete(rotateFile);
-            }
-        }
+        protected abstract void CleanFile(string file);
 
-        protected abstract void RotateFile(string file);
+        protected abstract void ArchiveFile(string file);
+
+        protected abstract void CompressFile(string file);
     }
 
-    public class DailyLogRotater : LogRotater
+    class DailyLogRotater : LogRotater
     {
         private string time;
         public DailyLogRotater(LogRotateOptions options) : base(options)
         {
             if (options.RotateType != RotateType.Daily) throw new NotSupportedException();
-            this.time = Options.RotateArguments ?? "0:00:00";
+            this.time = options.RotateArguments ?? "0:00:00";
         }
 
         protected override bool IsMatch(DateTime dateTime)
@@ -763,35 +778,45 @@ class NginxD : ServiceBase
             return dateTime.ToString("H:mm:ss") == time;
         }
 
-        protected override void RotateFile(string file)
+        protected override void ArchiveFile(string file)
         {
-            if (new FileInfo(file).Length != 0)
+            var fileInfo = new FileInfo(file);
+            if (fileInfo.Exists && fileInfo.Length != 0)
             {
-              File.Move(file, file + "-" + DateTime.Today.ToString("yyyyMMdd"));
-              NginxDaemon.Run("-s reopen").WaitForExit();
+                fileInfo.MoveTo(file + "-" + DateTime.Today.ToString("yyyyMMdd"));
             }
-            if (Options.Compress)
+        }
+
+        protected override void CompressFile(string file)
+        {
+            var date = DateTime.Today.AddDays(-options.DelayCompress);
+            var start = DateTime.Today.AddDays(-options.Rotate);
+            while (date >= start)
             {
-                var date = DateTime.Today.AddDays(-Options.DelayCompress);
-                var start = DateTime.Today.AddDays(-Options.Rotate);
-                while (date >= start)
+                var compressFile = file + "-" + date.ToString("yyyyMMdd");
+                if (File.Exists(compressFile))
                 {
-                    var compressFile = file + "-" + date.ToString("yyyyMMdd");
-                    if (File.Exists(compressFile))
-                    {
-                        CompressFile(compressFile);
-                        File.Delete(compressFile);
-                    }
-                    date = date.AddDays(-1);
+                    Compress(compressFile);
                 }
+                date = date.AddDays(-1);
             }
-            CleanFile(file);
+        }
+
+        protected override void CleanFile(string file)
+        {
+            var fileInfo = new FileInfo(file);
+            var expires = fileInfo.Name + "-" + DateTime.Today.AddDays(-options.Rotate).ToString("yyyyMMdd");
+            var files = fileInfo.Directory.GetFiles(fileInfo.Name + "-*");
+            foreach (var rotateFile in files)
+            {
+                if (string.Compare(rotateFile.Name, expires) == -1) rotateFile.Delete();
+            }
         }
     }
 
     readonly NginxDaemon daemon;
 
-    public NginxD(string serviceName)
+    NginxD(string serviceName)
     {
         ServiceName = serviceName;
         daemon = new NginxDaemon(this);
