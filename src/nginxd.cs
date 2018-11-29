@@ -809,7 +809,7 @@ class NginxD : ServiceBase
             var files = fileInfo.Directory.GetFiles(fileInfo.Name + "-*");
             foreach (var rotateFile in files)
             {
-                if (string.Compare(rotateFile.Name, expires) == -1) rotateFile.Delete();
+                if (string.Compare(rotateFile.Name, expires) <= 0) rotateFile.Delete();
             }
         }
     }
