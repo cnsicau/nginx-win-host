@@ -47,7 +47,7 @@ class NginxD : ServiceBase
         public void Start()
         {
             CheckConfig();                  // ensure configuration is OK
-            Run("-s quit").WaitForExit();   // clean up previous nginx process
+            Run("-s stop").WaitForExit();   // clean up previous nginx process
             new Thread(RunNginx).Start();
             rotater.Start();
             commandStream.BeginWaitForConnection(OnReceiveCommand, null);
@@ -789,16 +789,11 @@ class NginxD : ServiceBase
 
         protected override void CompressFile(string file)
         {
-            var date = DateTime.Today.AddDays(-options.DelayCompress);
-            var start = DateTime.Today.AddDays(-options.Rotate);
-            while (date >= start)
+            for ( var i = -options.Rotate; i <= -options.DelayCompress; i ++) 
             {
-                var compressFile = file + "-" + date.ToString("yyyyMMdd");
+                var compressFile = file + "-" + DateTime.Today.AddDays(i).ToString("yyyyMMdd");
                 if (File.Exists(compressFile))
-                {
-                    Compress(compressFile);
-                }
-                date = date.AddDays(-1);
+                    try { Compress(compressFile); } catch { }
             }
         }
 
