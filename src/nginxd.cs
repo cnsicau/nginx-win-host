@@ -325,6 +325,7 @@ class NginxD : ServiceBase
         {
             Invoke(Stop, serviceName);
         }
+
         static void Stop(TextWriter writer, IDictionary state, ServiceProcessInstaller installer, ServiceInstaller serviceInstaller, object args)
         {
             writer.WriteLine("Stop service " + (string)args);
@@ -341,7 +342,6 @@ class NginxD : ServiceBase
             if (service.Status != status) throw new InvalidOperationException("Invalid service status " + service.Status);
         }
     }
-
 
     public enum RotateType
     {
@@ -621,7 +621,7 @@ class NginxD : ServiceBase
         public void Start()
         {
             Reconfig();
-            this.timer = new Timer(OnTick, null, 750, 750);
+            this.timer = new Timer(OnTick, null, 450, 450);
         }
 
         void OnTick(object state)
@@ -674,11 +674,11 @@ class NginxD : ServiceBase
             Options = options;
         }
 
-        protected abstract bool CanTrigger(DateTime dateTime);
+        protected abstract bool IsMatch(DateTime dateTime);
 
         public virtual void Rotate(DateTime dateTime)
         {
-            if (!CanTrigger(dateTime)) return;
+            if (!IsMatch(dateTime)) return;
             Console.WriteLine("{0: mm:ss.fff}rotate", dateTime);
 
             var root = Options.Root;
@@ -689,12 +689,20 @@ class NginxD : ServiceBase
             }
 
             RotateDirectory(root);
-
-            NginxDaemon.Run("-s reopen");
         }
 
         void RotateDirectory(string root)
         {
+            var files = Directory.GetFiles(root, Options.Filter);
+            var regex = new Regex("^" + Options.Filter.Replace(".", "\\.").Replace("*", ".*") + "$");
+
+            foreach (var file in files)
+            {
+                if (!regex.IsMatch(Path.GetFileName(file))) continue;
+                
+                try{ RotateFile(file); }
+                catch(Exception e){ Trace.TraceError("rotate file " + file + " failed: " + e); }
+            }
             if (Options.IncludeSubDirs)
             {
                 foreach (var subDir in Directory.GetDirectories(root))
@@ -702,15 +710,7 @@ class NginxD : ServiceBase
                     RotateDirectory(subDir);
                 }
             }
-            var files = Directory.GetFiles(root, Options.Filter);
-            var regex = new Regex("^" + Options.Filter.Replace(".", "\\.").Replace("*", ".*") + "$");
-
-            foreach (var file in files)
-            {
-                if (!regex.IsMatch(Path.GetFileName(file))) continue;
-
-                RotateFile(file);
-            }
+         
         }
 
         protected void CompressFile(string file)
@@ -758,16 +758,18 @@ class NginxD : ServiceBase
             this.time = Options.RotateArguments ?? "0:00:00";
         }
 
-        protected override bool CanTrigger(DateTime dateTime)
+        protected override bool IsMatch(DateTime dateTime)
         {
             return dateTime.ToString("H:mm:ss") == time;
         }
 
         protected override void RotateFile(string file)
         {
-            if (new FileInfo(file).Length == 0)
-              File.Move(file, file + "-" + DateTime.Now.ToString("yyyyMMdd"));
-              
+            if (new FileInfo(file).Length != 0)
+            {
+              File.Move(file, file + "-" + DateTime.Today.ToString("yyyyMMdd"));
+              NginxDaemon.Run("-s reopen").WaitForExit();
+            }
             if (Options.Compress)
             {
                 var date = DateTime.Today.AddDays(-Options.DelayCompress);
@@ -775,18 +777,17 @@ class NginxD : ServiceBase
                 while (date >= start)
                 {
                     var compressFile = file + "-" + date.ToString("yyyyMMdd");
-                    if (!File.Exists(compressFile)) continue;
-
-                    CompressFile(compressFile);
-                    File.Delete(compressFile);
-
+                    if (File.Exists(compressFile))
+                    {
+                        CompressFile(compressFile);
+                        File.Delete(compressFile);
+                    }
                     date = date.AddDays(-1);
                 }
             }
             CleanFile(file);
         }
     }
-
 
     readonly NginxDaemon daemon;
 
@@ -829,6 +830,10 @@ class NginxD : ServiceBase
                         break;
                     case "stop":
                         ServiceManager.Stop(serviceName);
+                        break;
+                    case "restart":
+                        ServiceManager.Stop(serviceName);
+                        ServiceManager.Start(serviceName);
                         break;
                 }
             }
