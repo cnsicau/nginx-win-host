@@ -833,7 +833,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            return DateTime.Now.AddHours(rotateSize).ToString("yyyyMMddHHmm");
+            return DateTime.Now.AddMinutes(rotateSize).ToString("yyyyMMddHHmm");
         }
     }
 
