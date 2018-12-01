@@ -807,7 +807,7 @@ class NginxD : ServiceBase
 
             switch (options.RotateType)
             {
-                case RotateType.Minutely: return new HourlyLogRotater(options);
+                case RotateType.Minutely: return new MinutelyLogRotater(options);
                 case RotateType.Hourly: return new HourlyLogRotater(options);
                 case RotateType.Daily: return new DailyLogRotater(options);
                 case RotateType.Weekly: return new WeeklyLogRotater(options);
