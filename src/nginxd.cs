@@ -777,9 +777,10 @@ class NginxD : ServiceBase
         protected virtual void CleanFile(string file)
         {
             var fileInfo = new FileInfo(file);
-            var expires = fileInfo.Name + "-" + GetRotateSuffix(-options.Rotate);
-            File.Delete(expires);
-            File.Delete(expires + ".gz");
+            var suffix = "-" + GetRotateSuffix(-options.Rotate);
+            var expires = fileInfo.Name + suffix;
+            File.Delete(file + suffix);
+            File.Delete(file + suffix + ".gz");
             var files = fileInfo.Directory.GetFiles(fileInfo.Name + "-*");
             foreach (var rotateFile in files)
             {
