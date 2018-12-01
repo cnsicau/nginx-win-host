@@ -676,6 +676,8 @@ class NginxD : ServiceBase
         delegate void RotateFileAction(string file);
 
         protected readonly LogRotateOptions options;
+        
+        protected DateTime rotateTime;
 
         public LogRotater(RotateType supportedType, LogRotateOptions options)
         {
@@ -689,7 +691,9 @@ class NginxD : ServiceBase
         public virtual void Rotate(DateTime dateTime)
         {
             if (!IsMatch(dateTime)) return;
-
+            
+            rotateTime = dateTime;
+            
             var root = options.Root;
             if (!Directory.Exists(root))
             {
@@ -835,7 +839,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            return DateTime.Now.AddMinutes(rotateSize).ToString("yyyyMMddHHmm");
+            return rotateTime.AddMinutes(rotateSize).ToString("yyyyMMddHHmm");
         }
     }
 
@@ -854,7 +858,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            return DateTime.Now.AddHours(rotateSize).ToString("yyyyMMddHH");
+            return rotateTime.AddHours(rotateSize).ToString("yyyyMMddHH");
         }
     }
 
@@ -873,7 +877,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            return DateTime.Today.AddDays(rotateSize).ToString("yyyyMMdd");
+            return rotateTime.AddDays(rotateSize).ToString("yyyyMMdd");
         }
     }
 
@@ -893,7 +897,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            var date = DateTime.Today.AddDays(7 * rotateSize);
+            var date = rotateTime.AddDays(7 * rotateSize);
             // 2018W07
             return date.Year + "W" + Math.Ceiling(date.DayOfYear / 7.0).ToString().PadLeft(2, '0');
         }
@@ -915,7 +919,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            return DateTime.Today.AddMonths(rotateSize).ToString("yyyyMMdd");
+            return rotateTime.AddMonths(rotateSize).ToString("yyyyMMdd");
         }
     }
 
@@ -935,7 +939,7 @@ class NginxD : ServiceBase
 
         protected override string GetRotateSuffix(int rotateSize)
         {
-            return DateTime.Today.AddYears(rotateSize).ToString("yyyy");
+            return rotateTime.AddYears(rotateSize).ToString("yyyy");
         }
     }
 
