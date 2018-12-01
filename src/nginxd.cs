@@ -345,7 +345,13 @@ class NginxD : ServiceBase
 
     enum RotateType
     {
-        Daily = 0
+        Unknown,
+        Minutely,
+        Hourly,
+        Daily,
+        Weekly,
+        Monthly,
+        Yearly
     }
 
     class LogRotateOptions
@@ -671,7 +677,12 @@ class NginxD : ServiceBase
 
         protected readonly LogRotateOptions options;
 
-        public LogRotater(LogRotateOptions options) { this.options = options; }
+        public LogRotater(RotateType supportedType, LogRotateOptions options)
+        {
+            if (options.RotateType != supportedType)
+                throw new NotSupportedException("only support " + supportedType + " but encounter " + options.RotateType);
+            this.options = options;
+        }
 
         protected abstract bool IsMatch(DateTime dateTime);
 
@@ -757,19 +768,99 @@ class NginxD : ServiceBase
             File.Delete(file);
         }
 
-        protected abstract void CleanFile(string file);
+        protected abstract string GetRotateSuffix(int rotateSize);
 
-        protected abstract void ArchiveFile(string file);
+        protected virtual void CleanFile(string file)
+        {
+            var fileInfo = new FileInfo(file);
+            var expires = fileInfo.Name + "-" + GetRotateSuffix(-options.Rotate);
+            var files = fileInfo.Directory.GetFiles(fileInfo.Name + "-*");
+            foreach (var rotateFile in files)
+            {
+                if (string.Compare(rotateFile.Name, expires) <= 0) rotateFile.Delete();
+            }
+        }
 
-        protected abstract void CompressFile(string file);
+        protected virtual void ArchiveFile(string file)
+        {
+            var fileInfo = new FileInfo(file);
+            if (fileInfo.Exists && fileInfo.Length != 0)
+            {
+                fileInfo.MoveTo(file + "-" + GetRotateSuffix(0));
+            }
+        }
+
+        protected virtual void CompressFile(string file)
+        {
+            for (var i = -options.Rotate; i <= -options.DelayCompress; i++)
+            {
+                var compressFile = file + "-" + GetRotateSuffix(i);
+                if (File.Exists(compressFile))
+                    try { Compress(compressFile); } catch { }
+            }
+        }
+
+        public static LogRotater Create(LogRotateOptions options)
+        {
+            if (options == null)
+                throw new ArgumentNullException("options");
+
+            switch (options.RotateType)
+            {
+                case RotateType.Minutely: return new HourlyLogRotater(options);
+                case RotateType.Hourly: return new HourlyLogRotater(options);
+                case RotateType.Daily: return new DailyLogRotater(options);
+                case RotateType.Weekly: return new WeeklyLogRotater(options);
+                case RotateType.Monthly: return new MonthlyLogRotater(options);
+                case RotateType.Yearly: return new YearlyLogRotater(options);
+            }
+            throw new NotSupportedException(options.RotateType.ToString());
+        }
+    }
+
+    class MinutelyLogRotater : LogRotater
+    {
+        private string time;
+        public MinutelyLogRotater(LogRotateOptions options) : base(RotateType.Minutely, options)
+        {
+            this.time = options.RotateArguments ?? "0";
+        }
+
+        protected override bool IsMatch(DateTime dateTime)
+        {
+            return dateTime.Second.ToString() == time;
+        }
+
+        protected override string GetRotateSuffix(int rotateSize)
+        {
+            return DateTime.Now.AddHours(rotateSize).ToString("yyyyMMddHHmm");
+        }
+    }
+
+    class HourlyLogRotater : LogRotater
+    {
+        private string time;
+        public HourlyLogRotater(LogRotateOptions options) : base(RotateType.Hourly, options)
+        {
+            this.time = options.RotateArguments ?? "00:00";
+        }
+
+        protected override bool IsMatch(DateTime dateTime)
+        {
+            return dateTime.ToString("mm:ss") == time;
+        }
+
+        protected override string GetRotateSuffix(int rotateSize)
+        {
+            return DateTime.Now.AddHours(rotateSize).ToString("yyyyMMddHH");
+        }
     }
 
     class DailyLogRotater : LogRotater
     {
         private string time;
-        public DailyLogRotater(LogRotateOptions options) : base(options)
+        public DailyLogRotater(LogRotateOptions options) : base(RotateType.Daily, options)
         {
-            if (options.RotateType != RotateType.Daily) throw new NotSupportedException();
             this.time = options.RotateArguments ?? "0:00:00";
         }
 
@@ -778,34 +869,71 @@ class NginxD : ServiceBase
             return dateTime.ToString("H:mm:ss") == time;
         }
 
-        protected override void ArchiveFile(string file)
+        protected override string GetRotateSuffix(int rotateSize)
         {
-            var fileInfo = new FileInfo(file);
-            if (fileInfo.Exists && fileInfo.Length != 0)
-            {
-                fileInfo.MoveTo(file + "-" + DateTime.Today.ToString("yyyyMMdd"));
-            }
+            return DateTime.Today.AddDays(rotateSize).ToString("yyyyMMdd");
+        }
+    }
+
+    class WeeklyLogRotater : LogRotater
+    {
+        private string time;
+        public WeeklyLogRotater(LogRotateOptions options) : base(RotateType.Daily, options)
+        {
+            this.time = options.RotateArguments ?? "0";
         }
 
-        protected override void CompressFile(string file)
+        protected override bool IsMatch(DateTime dateTime)
         {
-            for ( var i = -options.Rotate; i <= -options.DelayCompress; i ++) 
-            {
-                var compressFile = file + "-" + DateTime.Today.AddDays(i).ToString("yyyyMMdd");
-                if (File.Exists(compressFile))
-                    try { Compress(compressFile); } catch { }
-            }
+            return dateTime.Hour == 0 && dateTime.Minute == 0 && dateTime.Second == 0
+                    && ((int)dateTime.DayOfWeek).ToString() == time;
         }
 
-        protected override void CleanFile(string file)
+        protected override string GetRotateSuffix(int rotateSize)
         {
-            var fileInfo = new FileInfo(file);
-            var expires = fileInfo.Name + "-" + DateTime.Today.AddDays(-options.Rotate).ToString("yyyyMMdd");
-            var files = fileInfo.Directory.GetFiles(fileInfo.Name + "-*");
-            foreach (var rotateFile in files)
-            {
-                if (string.Compare(rotateFile.Name, expires) <= 0) rotateFile.Delete();
-            }
+            var date = DateTime.Today.AddDays(7 * rotateSize);
+            // 2018W07
+            return date.Year + "W" + Math.Ceiling(date.DayOfYear / 7.0).ToString().PadLeft(2, '0');
+        }
+    }
+
+    class MonthlyLogRotater : LogRotater
+    {
+        private string time;
+        public MonthlyLogRotater(LogRotateOptions options) : base(RotateType.Monthly, options)
+        {
+            this.time = options.RotateArguments ?? "1";
+        }
+
+        protected override bool IsMatch(DateTime dateTime)
+        {
+            return dateTime.Hour == 0 && dateTime.Minute == 0 && dateTime.Second == 0
+                    && dateTime.ToString("d") == time;
+        }
+
+        protected override string GetRotateSuffix(int rotateSize)
+        {
+            return DateTime.Today.AddMonths(rotateSize).ToString("yyyyMMdd");
+        }
+    }
+
+    class YearlyLogRotater : LogRotater
+    {
+        private string time;
+        public YearlyLogRotater(LogRotateOptions options) : base(RotateType.Yearly, options)
+        {
+            this.time = options.RotateArguments ?? "1.1";
+        }
+
+        protected override bool IsMatch(DateTime dateTime)
+        {
+            return dateTime.Hour == 0 && dateTime.Minute == 0 && dateTime.Second == 0
+                    && dateTime.ToString("M.d") == time;
+        }
+
+        protected override string GetRotateSuffix(int rotateSize)
+        {
+            return DateTime.Today.AddYears(rotateSize).ToString("yyyy");
         }
     }
 
