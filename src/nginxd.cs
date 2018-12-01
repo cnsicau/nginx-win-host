@@ -664,7 +664,7 @@ class NginxD : ServiceBase
             for (int i = 0; i < builders.Length; i++)
             {
                 options[i] = builders[i].Build();
-                rotaters[i] = new DailyLogRotater(options[i]);
+                rotaters[i] = LogRotater.Create(options[i]);
             }
             this.rotaters = rotaters;
             return options;
