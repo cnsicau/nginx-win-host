@@ -774,6 +774,8 @@ class NginxD : ServiceBase
         {
             var fileInfo = new FileInfo(file);
             var expires = fileInfo.Name + "-" + GetRotateSuffix(-options.Rotate);
+            File.Delete(expires);
+            File.Delete(expires + ".gz");
             var files = fileInfo.Directory.GetFiles(fileInfo.Name + "-*");
             foreach (var rotateFile in files)
             {
