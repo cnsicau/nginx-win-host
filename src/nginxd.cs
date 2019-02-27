@@ -885,7 +885,7 @@ class NginxD : ServiceBase
     class WeeklyLogRotater : LogRotater
     {
         private string time;
-        public WeeklyLogRotater(LogRotateOptions options) : base(RotateType.Daily, options)
+        public WeeklyLogRotater(LogRotateOptions options) : base(RotateType.Weekly, options)
         {
             this.time = options.RotateArguments ?? "0";
         }
